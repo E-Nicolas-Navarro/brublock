@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { blockTypes, BLOCK_WIDTH, configurationSummary, createWall, quoteText } from "../lib/blocks";
+import { blockTypes, blockVolumeM3, BLOCK_WIDTH, configurationMetrics, configurationSummary, createWall, formatNumber, quoteText, supplier } from "../lib/blocks";
 import * as THREE from "three";
 import { createConcreteMaterial, normalizeBlockGeometry } from "../lib/block-rendering";
 
@@ -37,8 +37,75 @@ test("limits keep the viewer within its supported range", () => {
 test("quote contains actual counts and requests technical validation", () => {
   const quote = quoteText({ columns: 4, layers: 3, staggered: true, exploded: false }, "  Contención de patio  ");
   assert.match(quote, /Proyecto: Contención de patio/);
-  assert.match(quote, /Piezas estándar: 11. Medios bloques: 2/);
+  assert.match(quote, /Bloques altos \(80 × 160 × 80 cm\): 11/);
+  assert.match(quote, /Bloques cuadrados altos \(80 × 80 × 80 cm\): 2/);
+  assert.match(quote, /6,4 m de largo × 2,4 m de alto × 0,8 m de profundidad/);
+  assert.match(quote, /30\.720 kg/);
   assert.match(quote, /evaluación técnica/);
+});
+
+test("catalog dimensions and weights preserve the supplied brochure data", () => {
+  const expected: Record<string, { dimensions: number[]; weight: number }> = {
+    A00: { dimensions: [80, 160, 80], weight: 2560 },
+    A01: { dimensions: [80, 160, 40], weight: 1280 },
+    B: { dimensions: [80, 80, 80], weight: 1280 },
+    B01: { dimensions: [80, 80, 40], weight: 540 },
+    C: { dimensions: [40, 160, 80], weight: 1280 },
+    D: { dimensions: [160, 80], weight: 1920 },
+  };
+  for (const block of blockTypes) {
+    assert.deepEqual(block.dimensionsCm, expected[block.id].dimensions);
+    assert.equal(block.weightKg, expected[block.id].weight);
+  }
+  assert.equal(blockTypes.find((block) => block.id === "D")!.stepRiseCm, 20);
+  assert.equal(blockTypes.find((block) => block.id === "D")!.stepTreadCm, 22.5);
+  assert.deepEqual(blockTypes.map((block) => block.name), [
+    "Bloque alto", "Bloque cuadrado alto", "Bloque bajo", "Bloque cuadrado bajo", "Bloque tabique", "Bloque escalera",
+  ]);
+  assert.deepEqual(blockTypes.map((block) => block.catalogVolumeText), [
+    "1,024 m³", "512 m³", "512 m³", "256 m³", "512 m³", null,
+  ]);
+});
+
+test("rectangular volumes use cubic meters, not the brochure's missing separators", () => {
+  const volumes: Record<string, number | null> = { A00: 1.024, A01: 0.512, B: 0.512, B01: 0.256, C: 0.512, D: null };
+  for (const block of blockTypes) assert.equal(blockVolumeM3(block), volumes[block.id]);
+  assert.equal(formatNumber(0.512), "0,512");
+  assert.equal(formatNumber(2560), "2.560");
+});
+
+test("nominal wall dimensions and estimated weight are independent of layer separation", () => {
+  const config = { columns: 4, layers: 3, staggered: true, exploded: false };
+  assert.deepEqual(configurationMetrics(config), { lengthM: 6.4, heightM: 2.4, depthM: 0.8, weightKg: 30720 });
+  assert.deepEqual(configurationMetrics(config), configurationMetrics({ ...config, exploded: true }));
+  assert.deepEqual(configurationMetrics(config), configurationMetrics({ ...config, staggered: false }));
+});
+
+test("metrics use the same bounded dimensions as the rendered wall", () => {
+  assert.deepEqual(configurationMetrics({ columns: 100, layers: -2, staggered: false, exploded: false }), {
+    lengthM: 12.8, heightM: 0.8, depthM: 0.8, weightKg: 20480,
+  });
+});
+
+test("supplier contact matches the source without guessing an international WhatsApp number", () => {
+  assert.equal(supplier.brand, "BRUBLOCKS");
+  assert.equal(supplier.name, "Cantera Moreno");
+  assert.equal(supplier.phone, "0294 425-0785");
+  assert.equal(supplier.address, "Ruta Nacional 40, km 2030");
+  assert.equal(readFileSync(new URL("../public/catalogos/brublocks.jpeg", import.meta.url)).readUInt16BE(0), 0xffd8);
+});
+
+test("all six catalog entries have distinct GLB-derived vector illustrations", () => {
+  const illustrations = blockTypes.map((block) => {
+    const svg = readFileSync(new URL(`../public/illustrations/${block.id}.svg`, import.meta.url), "utf8");
+    assert.match(svg, /<svg[^>]+viewBox=/);
+    assert.ok(svg.includes(`<title id="title">${block.name}`));
+    assert.match(svg, /<polygon/);
+    assert.match(svg, /<path/);
+    assert.ok(!svg.includes("NaN"));
+    return svg;
+  });
+  assert.equal(new Set(illustrations).size, 6);
 });
 
 test("catalog IDs match the six actual GLB mesh nodes", () => {
